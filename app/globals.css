@@ -1,0 +1,146 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --background: #FAFAF8;
+  --foreground: #1A1A1A;
+  --muted: #F3F3EF;
+  --muted-foreground: #5C5C57;
+  --border: #E5E5E0;
+  --card: #FFFFFF;
+  --card-foreground: #1A1A1A;
+  --card-border: #E5E5E0;
+  --primary: #1E3A2F;
+  --primary-foreground: #FFFFFF;
+  --accent: #EAEBE5;
+  --accent-foreground: #1E3A2F;
+}
+
+.dark {
+  --background: #141416;
+  --foreground: #F8FAFC;
+  --muted: #1C1C20;
+  --muted-foreground: #9496A1;
+  --border: rgba(255, 255, 255, 0.08);
+  --card: #1F1F24;
+  --card-foreground: #F8FAFC;
+  --card-border: rgba(255, 255, 255, 0.08);
+  --primary: #3B82F6;
+  --primary-foreground: #FFFFFF;
+  --accent: #252830;
+  --accent-foreground: #93C5FD;
+}
+
+html {
+  scroll-behavior: smooth;
+  background-color: var(--background);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html {
+    scroll-behavior: auto;
+  }
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+body {
+  color: var(--foreground);
+  background: var(--background);
+  font-feature-settings: "cv02", "cv03", "cv04", "cv11";
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* SnowUI Component System */
+.snow-card {
+  background: #FFFFFF;
+  border: 1px solid rgba(0, 0, 0, 0.06);
+  border-radius: 1rem;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.02);
+}
+.dark .snow-card {
+  background: #1F1F24;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+}
+
+.snow-kpi-blue {
+  background: #E3F5FF;
+  color: #1C1C1C;
+  border-radius: 1rem;
+}
+.dark .snow-kpi-blue {
+  background: #18222C;
+  color: #F8FAFC;
+  border: 1px solid rgba(59, 130, 246, 0.25);
+}
+
+.snow-kpi-purple {
+  background: #E5ECF6;
+  color: #1C1C1C;
+  border-radius: 1rem;
+}
+.dark .snow-kpi-purple {
+  background: #24202E;
+  color: #F8FAFC;
+  border: 1px solid rgba(168, 85, 247, 0.25);
+}
+
+/* Enterprise legacy compatibility */
+.enterprise-card {
+  background: #FFFFFF;
+  border: 1px solid #E5E5E0;
+  border-radius: 4px;
+}
+.dark .enterprise-card {
+  background: #1F1F24;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.enterprise-card-interactive {
+  background: #FFFFFF;
+  border: 1px solid #E5E5E0;
+  border-radius: 4px;
+  transition: border-color 0.15s ease, background-color 0.15s ease;
+}
+
+.border-hairline {
+  border-color: #E5E5E0;
+}
+.dark .border-hairline {
+  border-color: rgba(255, 255, 255, 0.08);
+}
+
+/* Minimalist scrollbar */
+::-webkit-scrollbar {
+  width: 5px;
+  height: 5px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #D4D4CE;
+  border-radius: 3px;
+}
+.dark ::-webkit-scrollbar-thumb {
+  background: #3B3B42;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #B8B8B0;
+}
+.dark ::-webkit-scrollbar-thumb:hover {
+  background: #50505A;
+}

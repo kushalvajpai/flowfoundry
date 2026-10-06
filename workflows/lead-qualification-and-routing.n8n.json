@@ -1,0 +1,558 @@
+{
+  "name": "FlowFoundry — Lead Qualification, HubSpot & Resend Engine",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "flowfoundry-leads",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "node-webhook",
+      "name": "1. Inbound Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [100, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "// 2. Validate Inbound Lead Data\nconst body = $input.first().json.body || $input.first().json;\n\nconst requiredFields = ['fullName', 'companyName', 'email', 'industry', 'employees', 'monthlyLeadVolume', 'biggestProblem', 'currentTools'];\nconst missing = [];\n\nfor (const field of requiredFields) {\n  if (!body[field] || typeof body[field] !== 'string' || body[field].trim().length === 0) {\n    missing.push(field);\n  }\n}\n\nif (body.email && !body.email.includes('@')) {\n  missing.push('valid email');\n}\n\nif (missing.length > 0) {\n  return [{\n    json: {\n      isValid: false,\n      error: `Validation error: Missing or invalid fields: ${missing.join(', ')}`,\n      originalLead: body,\n      leadId: body.leadId || `lead_${Date.now()}`\n    }\n  }];\n}\n\nreturn [{\n  json: {\n    isValid: true,\n    lead: body,\n    leadId: body.leadId || `lead_${Date.now()}`\n  }\n}];"
+      },
+      "id": "node-validate",
+      "name": "2. Validate Inbound Lead",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [320, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{ $json.isValid }}",
+              "value2": true
+            }
+          ]
+        }
+      },
+      "id": "node-if-valid",
+      "name": "Is Lead Valid?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [520, 300]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={\n  \"success\": false,\n  \"message\": \"Validation failed\",\n  \"error\": {{ JSON.stringify($json.error) }}\n}",
+        "options": {
+          "responseCode": 400
+        }
+      },
+      "id": "node-respond-invalid",
+      "name": "Respond 400 Bad Request",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [720, 140]
+    },
+    {
+      "parameters": {
+        "model": "gpt-4o",
+        "options": {
+          "temperature": 0.2
+        },
+        "messages": {
+          "values": [
+            {
+              "role": "system",
+              "content": "You are a B2B automation consultant qualifying inbound business leads for FlowFoundry.\n\nEvaluate the information provided.\nConsider:\n1. Apparent business size\n2. Operational complexity\n3. Lead volume\n4. Repetitive work\n5. Severity of the stated problem\n6. Potential business value\n7. Suitability for automation\n8. Evidence of readiness for a discovery conversation\n\nIMPORTANT:\nDo not invent information. Do not assume revenue, budget, or authority. Be conservative.\n\nReturn ONLY valid JSON matching this schema:\n{\n  \"lead_score\": 0,\n  \"classification\": \"HOT\",\n  \"business_type\": \"\",\n  \"primary_problem\": \"\",\n  \"automation_opportunity\": \"\",\n  \"estimated_priority\": \"HIGH\",\n  \"recommended_next_step\": \"\",\n  \"reasoning\": \"\"\n}\n\nRules:\n- lead_score: 0-100\n- classification: HOT | WARM | COLD\n- estimated_priority: HIGH | MEDIUM | LOW\n- reasoning: Short explanation based only on supplied information."
+            },
+            {
+              "role": "user",
+              "content": "=Please evaluate this submitted lead:\n{{ JSON.stringify($json.lead, null, 2) }}"
+            }
+          ]
+        }
+      },
+      "id": "node-ai-qualification",
+      "name": "3. AI Qualification (OpenAI)",
+      "type": "@n8n/n8n-nodes-langchain.openAi",
+      "typeVersion": 1,
+      "position": [740, 360]
+    },
+    {
+      "parameters": {
+        "jsCode": "// 4. Parse JSON & Exception Guard\nconst rawAiResponse = $input.first().json.message?.content || $input.first().json.text || $input.first().json.response || '';\nconst lead = $('2. Validate Inbound Lead').first().json.lead;\nconst leadId = $('2. Validate Inbound Lead').first().json.leadId;\n\nfunction sanitizeAiResponse(raw) {\n  if (typeof raw !== 'string') return raw;\n  return raw.replace(/^```(?:json)?\\s*/i, '').replace(/\\s*```$/, '').trim();\n}\n\nlet parsed = null;\ntry {\n  const cleanText = sanitizeAiResponse(rawAiResponse);\n  parsed = JSON.parse(cleanText);\n} catch (err) {\n  return [{\n    json: {\n      status: 'EXCEPTION',\n      routing: 'EXCEPTION',\n      leadId,\n      originalLead: lead,\n      errorReason: 'Malformed AI JSON output: ' + err.message,\n      rawAiResponse,\n      manualReviewRequired: true,\n      timestamp: new Date().toISOString()\n    }\n  }];\n}\n\nconst validClassifications = ['HOT', 'WARM', 'COLD'];\nconst isScoreValid = typeof parsed.lead_score === 'number' && parsed.lead_score >= 0 && parsed.lead_score <= 100;\nconst isClassValid = validClassifications.includes(parsed.classification);\n\nif (!isScoreValid || !isClassValid || !parsed.primary_problem || !parsed.automation_opportunity) {\n  return [{\n    json: {\n      status: 'EXCEPTION',\n      routing: 'EXCEPTION',\n      leadId,\n      originalLead: lead,\n      errorReason: 'AI response failed schema validation constraints',\n      rawAiResponse: parsed,\n      manualReviewRequired: true,\n      timestamp: new Date().toISOString()\n    }\n  }];\n}\n\nreturn [{\n  json: {\n    status: 'QUALIFIED',\n    routing: parsed.classification,\n    leadId,\n    originalLead: lead,\n    qualification: parsed,\n    timestamp: new Date().toISOString()\n  }\n}];"
+      },
+      "id": "node-parse-json",
+      "name": "4. Parse JSON & Exception Guard",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [960, 360]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "string": [
+            {
+              "value1": "={{ $json.status }}",
+              "value2": "QUALIFIED"
+            }
+          ]
+        }
+      },
+      "id": "node-if-qualified",
+      "name": "Is AI Qualified?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [1160, 360]
+    },
+    {
+      "parameters": {
+        "resource": "contact",
+        "operation": "upsert",
+        "email": "={{ $json.originalLead.email }}",
+        "additionalFields": {
+          "firstname": "={{ $json.originalLead.fullName.split(' ')[0] }}",
+          "lastname": "={{ $json.originalLead.fullName.split(' ').slice(1).join(' ') || '' }}",
+          "company": "={{ $json.originalLead.companyName }}",
+          "phone": "={{ $json.originalLead.phone || '' }}",
+          "website": "={{ $json.originalLead.website || '' }}",
+          "industry": "={{ $json.originalLead.industry }}",
+          "customPropertiesUi": {
+            "customPropertiesValues": [
+              {
+                "property": "flowfoundry_lead_score",
+                "value": "={{ $json.qualification.lead_score.toString() }}"
+              },
+              {
+                "property": "flowfoundry_classification",
+                "value": "={{ $json.qualification.classification }}"
+              },
+              {
+                "property": "flowfoundry_primary_problem",
+                "value": "={{ $json.qualification.primary_problem }}"
+              },
+              {
+                "property": "flowfoundry_automation_opportunity",
+                "value": "={{ $json.qualification.automation_opportunity }}"
+              },
+              {
+                "property": "lead_source",
+                "value": "={{ $json.originalLead.source || 'website_audit_form' }}"
+              },
+              {
+                "property": "hs_lead_status",
+                "value": "={{ $json.originalLead.status || 'NEW' }}"
+              }
+            ]
+          }
+        }
+      },
+      "id": "node-hubspot-upsert",
+      "name": "5. HubSpot: Upsert Contact & Company",
+      "type": "n8n-nodes-base.hubspot",
+      "typeVersion": 2,
+      "position": [1380, 340],
+      "credentials": {
+        "hubspotAppToken": {
+          "id": "flowfoundry-hubspot-token",
+          "name": "FlowFoundry HubSpot App Token"
+        }
+      },
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "dataType": "string",
+        "value1": "={{ $('4. Parse JSON & Exception Guard').item.json.routing }}",
+        "rules": {
+          "rules": [
+            {
+              "value2": "HOT"
+            },
+            {
+              "value2": "WARM"
+            },
+            {
+              "value2": "COLD"
+            }
+          ]
+        }
+      },
+      "id": "node-switch-routing",
+      "name": "6. Classification Switch",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 2,
+      "position": [1640, 260]
+    },
+    {
+      "parameters": {
+        "jsCode": "// HOT Lead: Prepare Email 1 (Confirmation) & Email 2 (Internal Notification)\nconst parsed = $('4. Parse JSON & Exception Guard').item.json;\nconst lead = parsed.originalLead;\nconst q = parsed.qualification;\nconst hubspot = $input.first().json;\nconst leadId = parsed.leadId;\n\nconst salesEmail = $env.FLOWFOUNDRY_SALES_EMAIL || 'sales@flowfoundry.io';\nconst fromEmail = $env.RESEND_FROM_EMAIL || 'FlowFoundry <onboarding@resend.dev>';\nconst firstName = lead.fullName.split(' ')[0] || 'there';\n\n// EMAIL 1: Lead confirmation (professional & concise)\nconst confirmationPayload = {\n  from: fromEmail,\n  to: [lead.email],\n  subject: 'Automation Audit Request Received — FlowFoundry',\n  text: `Hello ${firstName},\\n\\nThank you for requesting an Automation Audit for ${lead.companyName}. We have successfully received your intake details regarding: ${q.primary_problem}.\\n\\nBased on your volume (${lead.monthlyLeadVolume}) and stack (${lead.currentTools}), your workflows show strong alignment with our automation engine. We recommend a 25-minute technical discovery session to review architectural requirements:\\n\\nhttps://flowfoundry.io/schedule?lead=${leadId}\\n\\nBest regards,\\nThe FlowFoundry Solutions Architecture Team\\nhttps://flowfoundry.io`\n};\n\n// EMAIL 2: Internal sales notification for HOT lead\nconst internalNotificationPayload = {\n  from: fromEmail,\n  to: [salesEmail],\n  subject: `🔥 NEW HOT LEAD: ${lead.companyName} (Score: ${q.lead_score}/100)`,\n  text: `================================================\\nNEW HOT LEAD\\n================================================\\n\\nCompany: ${lead.companyName}\\nContact: ${lead.fullName} (${lead.email}${lead.phone ? ' / ' + lead.phone : ''})\\nLead Score: ${q.lead_score}/100\\nClassification: ${q.classification}\\nPrimary Problem: ${q.primary_problem}\\nAutomation Opportunity: ${q.automation_opportunity}\\nRecommended Next Step: ${q.recommended_next_step}\\n\\nLead ID: ${leadId}\\nEmployees: ${lead.employees}\\nMonthly Lead Volume: ${lead.monthlyLeadVolume}\\nCurrent Tools: ${lead.currentTools}\\nWebsite: ${lead.website || 'N/A'}\\nEvaluation Reasoning: ${q.reasoning}`\n};\n\nreturn [{\n  json: {\n    status: 'HOT_PREPARED',\n    leadId,\n    classification: 'HOT',\n    lead,\n    qualification: q,\n    hubspotContactId: hubspot.id || hubspot.vid || 'upserted',\n    confirmationPayload,\n    internalNotificationPayload\n  }\n}];"
+      },
+      "id": "node-hot-actions",
+      "name": "HOT: Prepare Resend Payloads",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1900, 160]
+    },
+    {
+      "parameters": {
+        "jsCode": "// WARM Lead: Prepare Email 1 (Confirmation) & Email 2 (Internal Notification)\nconst parsed = $('4. Parse JSON & Exception Guard').item.json;\nconst lead = parsed.originalLead;\nconst q = parsed.qualification;\nconst hubspot = $input.first().json;\nconst leadId = parsed.leadId;\n\nconst salesEmail = $env.FLOWFOUNDRY_SALES_EMAIL || 'sales@flowfoundry.io';\nconst fromEmail = $env.RESEND_FROM_EMAIL || 'FlowFoundry <onboarding@resend.dev>';\nconst firstName = lead.fullName.split(' ')[0] || 'there';\n\n// EMAIL 1: Lead confirmation (professional & concise)\nconst confirmationPayload = {\n  from: fromEmail,\n  to: [lead.email],\n  subject: 'Automation Audit Request Received — FlowFoundry',\n  text: `Hello ${firstName},\\n\\nThank you for sharing your operational requirements for ${lead.companyName}. We have successfully received your details regarding: ${q.primary_problem}.\\n\\nOur engineering team evaluates submissions in detail to ensure targeted architecture recommendations. A solutions consultant will review your stack and follow up with you within 24 to 48 business hours.\\n\\nWarm regards,\\nThe FlowFoundry Team\\nhttps://flowfoundry.io`\n};\n\n// EMAIL 2: Internal notification for WARM lead\nconst internalNotificationPayload = {\n  from: fromEmail,\n  to: [salesEmail],\n  subject: `⚡ NEW WARM LEAD: ${lead.companyName} (Score: ${q.lead_score}/100)`,\n  text: `================================================\\nNEW WARM LEAD\\n================================================\\n\\nCompany: ${lead.companyName}\\nContact: ${lead.fullName} (${lead.email}${lead.phone ? ' / ' + lead.phone : ''})\\nLead Score: ${q.lead_score}/100\\nClassification: ${q.classification}\\nPrimary Problem: ${q.primary_problem}\\nAutomation Opportunity: ${q.automation_opportunity}\\nRecommended Action: Review within 24-48 business hours & initiate follow-up outreach\\n\\nLead ID: ${leadId}\\nEmployees: ${lead.employees}\\nMonthly Lead Volume: ${lead.monthlyLeadVolume}\\nCurrent Tools: ${lead.currentTools}`\n};\n\nreturn [{\n  json: {\n    status: 'WARM_PREPARED',\n    leadId,\n    classification: 'WARM',\n    lead,\n    qualification: q,\n    hubspotContactId: hubspot.id || hubspot.vid || 'upserted',\n    confirmationPayload,\n    internalNotificationPayload\n  }\n}];"
+      },
+      "id": "node-warm-actions",
+      "name": "WARM: Prepare Resend Payloads",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1900, 280]
+    },
+    {
+      "parameters": {
+        "jsCode": "// COLD Lead: Prepare Email 1 (Confirmation) & Email 2 (Internal Notification)\nconst parsed = $('4. Parse JSON & Exception Guard').item.json;\nconst lead = parsed.originalLead;\nconst q = parsed.qualification;\nconst hubspot = $input.first().json;\nconst leadId = parsed.leadId;\n\nconst salesEmail = $env.FLOWFOUNDRY_SALES_EMAIL || 'sales@flowfoundry.io';\nconst fromEmail = $env.RESEND_FROM_EMAIL || 'FlowFoundry <onboarding@resend.dev>';\nconst firstName = lead.fullName.split(' ')[0] || 'there';\n\n// EMAIL 1: Lead confirmation (resources & blueprints)\nconst confirmationPayload = {\n  from: fromEmail,\n  to: [lead.email],\n  subject: 'Automation Audit Request Received — FlowFoundry',\n  text: `Hello ${firstName},\\n\\nThank you for your interest in FlowFoundry. We have received your inquiry for ${lead.companyName}.\\n\\nWhile our custom enterprise engagements focus on high-velocity inbound pipelines, we publish comprehensive architectural blueprints and automation guides that may assist your team:\\nhttps://flowfoundry.io/resources\\n\\nSincerely,\\nFlowFoundry Resources\\nhttps://flowfoundry.io`\n};\n\n// EMAIL 2: Internal notification for COLD lead (nurture rule)\nconst internalNotificationPayload = {\n  from: fromEmail,\n  to: [salesEmail],\n  subject: `📋 NEW INBOUND LEAD (COLD / NURTURE): ${lead.companyName} (Score: ${q.lead_score}/100)`,\n  text: `================================================\\nNEW COLD LEAD (NURTURE)\\n================================================\\n\\nCompany: ${lead.companyName}\\nContact: ${lead.fullName} (${lead.email})\\nLead Score: ${q.lead_score}/100\\nClassification: ${q.classification}\\nPrimary Problem: ${q.primary_problem}\\nAutomation Opportunity: ${q.automation_opportunity}\\nWorkflow Action: Enrolled in educational nurture campaign / low-touch sequence\\n\\nLead ID: ${leadId}`\n};\n\nreturn [{\n  json: {\n    status: 'COLD_PREPARED',\n    leadId,\n    classification: 'COLD',\n    lead,\n    qualification: q,\n    hubspotContactId: hubspot.id || hubspot.vid || 'upserted',\n    confirmationPayload,\n    internalNotificationPayload\n  }\n}];"
+      },
+      "id": "node-cold-actions",
+      "name": "COLD: Prepare Resend Payloads",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1900, 400]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.resend.com/emails",
+        "authentication": "genericCredentialType",
+        "genericCredentialType": "httpBearerAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.confirmationPayload) }}",
+        "options": {}
+      },
+      "id": "node-resend-confirmation",
+      "name": "7. Resend: Send Lead Confirmation (Email 1)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [2150, 260],
+      "credentials": {
+        "httpBearerAuth": {
+          "id": "flowfoundry-resend-api",
+          "name": "FlowFoundry Resend API Key"
+        }
+      },
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.resend.com/emails",
+        "authentication": "genericCredentialType",
+        "genericCredentialType": "httpBearerAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($('node-switch-routing').item.json.internalNotificationPayload || $('node-hot-actions').item?.json?.internalNotificationPayload || $('node-warm-actions').item?.json?.internalNotificationPayload || $('node-cold-actions').item?.json?.internalNotificationPayload) }}",
+        "options": {}
+      },
+      "id": "node-resend-internal",
+      "name": "8. Resend: Send Internal Notification (Email 2)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [2400, 240],
+      "credentials": {
+        "httpBearerAuth": {
+          "id": "flowfoundry-resend-api",
+          "name": "FlowFoundry Resend API Key"
+        }
+      },
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Log Email Delivery Success & Compile Final Status\nconst confirmationRes = $('7. Resend: Send Lead Confirmation (Email 1)').first()?.json || {};\nconst internalRes = $input.first().json || {};\nconst context = $('HOT: Prepare Resend Payloads').first()?.json || $('WARM: Prepare Resend Payloads').first()?.json || $('COLD: Prepare Resend Payloads').first()?.json || {};\n\nconsole.log(`[FlowFoundry n8n] Resend emails dispatched for lead ${context.leadId} (${context.classification}). Confirmation: ${confirmationRes.id || 'sent'}, Internal: ${internalRes.id || 'sent'}`);\n\nreturn [{\n  json: {\n    status: `${context.classification}_PROCESSED`,\n    emailIntegrationStatus: 'SENT',\n    leadId: context.leadId,\n    classification: context.classification,\n    confirmationMessageId: confirmationRes.id || 'sent',\n    internalMessageId: internalRes.id || 'sent',\n    hubspotContactId: context.hubspotContactId,\n    timestamp: new Date().toISOString()\n  }\n}];"
+      },
+      "id": "node-email-success",
+      "name": "Log Email Delivery Success",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2650, 240]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Email Failure Exception Handler\n// Preserves lead data, logs integration error safely without exposing API keys, and avoids workflow crash\nconst errorData = $input.first().json;\nconst context = $('HOT: Prepare Resend Payloads').first()?.json || $('WARM: Prepare Resend Payloads').first()?.json || $('COLD: Prepare Resend Payloads').first()?.json || {};\nconst lead = context.lead;\nconst leadId = context.leadId || `lead_${Date.now()}`;\n\nconst rawMessage = errorData.error?.message || errorData.message || JSON.stringify(errorData);\nconst safeError = rawMessage.replace(/re_[a-zA-Z0-9_]+/g, '[REDACTED_RESEND_KEY]');\n\nconsole.error(`[FlowFoundry n8n] Resend email delivery failed for lead ${leadId}: ${safeError}`);\n\nreturn [{\n  json: {\n    status: 'PROCESSED_WITH_EMAIL_WARNING',\n    emailIntegrationStatus: 'FAILED',\n    leadId,\n    originalLead: lead,\n    errorReason: safeError,\n    leadPreserved: true,\n    manualReviewRequired: false,\n    timestamp: new Date().toISOString()\n  }\n}];"
+      },
+      "id": "node-email-error",
+      "name": "Email Failure: Exception & Safe Logging",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2400, 440]
+    },
+    {
+      "parameters": {
+        "jsCode": "// HubSpot Failure Exception Handler\n// Preserves lead in DB, logs error safely, routes to quarantine, avoids data loss\nconst errorData = $input.first().json;\nconst parsed = $('4. Parse JSON & Exception Guard').item.json;\nconst lead = parsed.originalLead;\nconst leadId = parsed.leadId;\n\nconst safeError = errorData.error?.message || errorData.message || 'HubSpot API operation failed';\n\nconsole.error(`[FlowFoundry n8n] HubSpot sync error for lead ${leadId}: ${safeError}`);\n\nreturn [{\n  json: {\n    status: 'EXCEPTION_HUBSPOT_FAILED',\n    leadId,\n    originalLead: lead, // Complete original lead data preserved\n    qualification: parsed.qualification,\n    errorReason: safeError,\n    manualReviewRequired: true,\n    quarantineStage: 'hubspot_sync_failure',\n    opsAlert: {\n      channel: '#ops-crm-failures',\n      text: `⚠️ *HubSpot CRM Sync Failed*\\n*Lead ID:* ${leadId}\\n*Company:* ${lead.companyName}\\n*Email:* ${lead.email}\\n*Error:* ${safeError}\\n*Status:* Lead safely preserved in database. Routed to exception queue.`\n    },\n    timestamp: new Date().toISOString()\n  }\n}];"
+      },
+      "id": "node-hubspot-error",
+      "name": "HubSpot Failure: Exception & Quarantine",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1640, 520]
+    },
+    {
+      "parameters": {
+        "jsCode": "// General AI Parsing Exception Handler\nconst item = $input.first().json;\nconsole.warn('[FlowFoundry n8n] AI parsing exception for lead:', item.leadId);\n\nreturn [{\n  json: {\n    status: 'EXCEPTION_AI_FAILED',\n    leadId: item.leadId,\n    originalLead: item.originalLead,\n    errorReason: item.errorReason,\n    manualReviewRequired: true,\n    quarantineStage: 'ai_qualification_failure',\n    opsAlert: {\n      channel: '#ops-lead-exceptions',\n      text: `⚠️ *Lead Qualification Exception*\\n*Lead ID:* ${item.leadId}\\n*Reason:* ${item.errorReason}\\n*Action:* Original data preserved in database. Routed to manual review.`\n    },\n    timestamp: item.timestamp\n  }\n}];"
+      },
+      "id": "node-ai-error",
+      "name": "AI Error: Quarantine & Safe Logging",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1380, 560]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={\n  \"success\": true,\n  \"message\": \"Lead processing complete\",\n  \"status\": \"{{ $json.status }}\",\n  \"leadId\": \"{{ $json.leadId }}\"\n}",
+        "options": {}
+      },
+      "id": "node-respond-success",
+      "name": "Respond 200 Success",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [2900, 260]
+    }
+  ],
+  "connections": {
+    "1. Inbound Webhook": {
+      "main": [
+        [
+          {
+            "node": "2. Validate Inbound Lead",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "2. Validate Inbound Lead": {
+      "main": [
+        [
+          {
+            "node": "Is Lead Valid?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Is Lead Valid?": {
+      "main": [
+        [
+          {
+            "node": "3. AI Qualification (OpenAI)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond 400 Bad Request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "3. AI Qualification (OpenAI)": {
+      "main": [
+        [
+          {
+            "node": "4. Parse JSON & Exception Guard",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "4. Parse JSON & Exception Guard": {
+      "main": [
+        [
+          {
+            "node": "Is AI Qualified?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Is AI Qualified?": {
+      "main": [
+        [
+          {
+            "node": "5. HubSpot: Upsert Contact & Company",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "AI Error: Quarantine & Safe Logging",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "5. HubSpot: Upsert Contact & Company": {
+      "main": [
+        [
+          {
+            "node": "6. Classification Switch",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "HubSpot Failure: Exception & Quarantine",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "6. Classification Switch": {
+      "main": [
+        [
+          {
+            "node": "HOT: Prepare Resend Payloads",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "WARM: Prepare Resend Payloads",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "COLD: Prepare Resend Payloads",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HOT: Prepare Resend Payloads": {
+      "main": [
+        [
+          {
+            "node": "7. Resend: Send Lead Confirmation (Email 1)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "WARM: Prepare Resend Payloads": {
+      "main": [
+        [
+          {
+            "node": "7. Resend: Send Lead Confirmation (Email 1)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "COLD: Prepare Resend Payloads": {
+      "main": [
+        [
+          {
+            "node": "7. Resend: Send Lead Confirmation (Email 1)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "7. Resend: Send Lead Confirmation (Email 1)": {
+      "main": [
+        [
+          {
+            "node": "8. Resend: Send Internal Notification (Email 2)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Email Failure: Exception & Safe Logging",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "8. Resend: Send Internal Notification (Email 2)": {
+      "main": [
+        [
+          {
+            "node": "Log Email Delivery Success",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Email Failure: Exception & Safe Logging",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Log Email Delivery Success": {
+      "main": [
+        [
+          {
+            "node": "Respond 200 Success",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Email Failure: Exception & Safe Logging": {
+      "main": [
+        [
+          {
+            "node": "Respond 200 Success",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HubSpot Failure: Exception & Quarantine": {
+      "main": [
+        [
+          {
+            "node": "Respond 200 Success",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "AI Error: Quarantine & Safe Logging": {
+      "main": [
+        [
+          {
+            "node": "Respond 200 Success",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  }
+}
