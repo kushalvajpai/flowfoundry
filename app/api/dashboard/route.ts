@@ -10,7 +10,7 @@ const UUID_REGEX =
 
 export async function GET(req: NextRequest) {
   // Logged-in operators have full access; unauthenticated requests receive read-only live telemetry
-  const _session = await verifySessionFromRequest(req);
+  await verifySessionFromRequest(req);
 
   try {
     const { searchParams } = new URL(req.url);

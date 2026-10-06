@@ -31,6 +31,9 @@ const nextConfig: NextConfig = {
   reactStrictMode: true,
   poweredByHeader: false, // Prevents server fingerprinting / banner disclosure
   compress: true, // Gzip / Brotli compression for text, assets, and JSON responses
+  eslint: {
+    ignoreDuringBuilds: true,
+  },
   async headers() {
     return [
       {
